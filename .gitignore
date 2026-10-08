@@ -1,0 +1,7 @@
+*.env
+.idea
+.venv
+bot_state.dev.json
+bot_state.json
+svitlo_graph.dev.mp4
+svitlo_graph.mp4
