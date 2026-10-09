@@ -1,6 +1,5 @@
 from dataclasses import dataclass
 import os
-from pathlib import Path
 import sys
 from dotenv import load_dotenv
 
@@ -58,7 +57,7 @@ class Config:
         "HA_CALENDAR_SCHEDULED", "calendar.kyiv_region_4_1_scheduled_outages"
     )
 
-    # Static Assets & Storage Paths
+    # Static Assets Paths
     logo_path: str = os.getenv("LOGO_PATH", "./assets/logo.png")
     font_path: str = os.getenv("FONT_PATH", "./assets/font.ttf")
 
@@ -88,13 +87,15 @@ class Config:
 
     @property
     def state_file_path(self) -> str:
-        """State persistence file isolated between dev and prod environments."""
-        return "./bot_state.dev.json" if self.is_dev else "./bot_state.json"
+        """State persistence file stored in data directory to support clean Docker volume mounts."""
+        default_path = "./data/bot_state.dev.json" if self.is_dev else "./data/bot_state.json"
+        return os.getenv("STATE_FILE_PATH", default_path)
 
     @property
     def output_image_path(self) -> str:
         """Video render output path isolated between dev and prod environments."""
-        return "./svitlo_graph.dev.mp4" if self.is_dev else "./svitlo_graph.mp4"
+        default_path = "./svitlo_graph.dev.mp4" if self.is_dev else "./svitlo_graph.mp4"
+        return os.getenv("OUTPUT_IMAGE_PATH", default_path)
 
 
 config = Config()
