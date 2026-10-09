@@ -1,5 +1,7 @@
 from datetime import datetime
 import logging
+from typing import Callable
+
 from aiogram import Bot
 from aiogram.enums import ParseMode
 from aiogram.types import FSInputFile
@@ -19,13 +21,13 @@ logger = logging.getLogger(__name__)
 
 class PowerMonitor:
     def __init__(
-        self,
-        bot: Bot,
-        config: Config,
-        store: StateStore,
-        ha_client: HomeAssistantClient,
-        power_srv: PowerService,
-        event_card_srv: EventCardService,
+            self,
+            bot: Bot,
+            config: Config,
+            store: StateStore,
+            ha_client: HomeAssistantClient,
+            power_srv: PowerService,
+            event_card_srv: EventCardService,
     ):
         self.bot = bot
         self.cfg = config
@@ -64,11 +66,16 @@ class PowerMonitor:
 
         self.store.save()
 
+        # Define the start of the current day for historical and calendar queries
+        today_start = now_dt.replace(hour=0, minute=0, second=0, microsecond=0)
+
         # Fetch telemetry and schedule status from Home Assistant
         v_state = await self.ha.get_entity_state(self.cfg.voltage_sensor)
         f_state = await self.ha.get_entity_state(self.cfg.frequency_sensor)
         dtek_state = await self.ha.get_entity_state(self.cfg.dtek_electricity_status)
-        planned_events = await self.ha.get_calendar_events(self.cfg.calendar_planned, now_dt, 24)
+
+        # Fetch planned events starting from midnight (today_start) to populate the "Plan" chart correctly
+        planned_events = await self.ha.get_calendar_events(self.cfg.calendar_planned, today_start, 48)
 
         voltage = self._parse_float(v_state) if is_on else 0.0
         freq = self._parse_float(f_state, default=50.0) if is_on else None
@@ -78,7 +85,6 @@ class PowerMonitor:
         dur_str = dur_template.format(duration=self.power_srv.format_duration(elapsed)) if elapsed else ""
 
         # Fetch factual binary sensor history for the current day
-        today_start = now_dt.replace(hour=0, minute=0, second=0, microsecond=0)
         fact_history = await self.ha.get_entity_history(self.cfg.power_binary_sensor, today_start, now_dt)
 
         # Generate event comparison video (Meme -> Status Card -> Plan vs Fact)
@@ -95,12 +101,17 @@ class PowerMonitor:
             group_name=self.cfg.group_name,
         )
 
+        # Safely resolve dynamic prefix and suffix from config
+        prefix = getattr(self.cfg, "msg_dev_prefix", getattr(self.cfg, "msg_prefix", ""))
+        suffix = getattr(self.cfg, "msg_suffix", "")
+
         # Compose message text
         if is_on:
-            next_outage_str = self._calculate_next_outage(planned_events, now_dt)
-            msg = self.cfg.msg_prefix + self.power_srv.build_power_on_message(voltage, dtek_status, next_outage_str)
+            next_outage_str = self._calculate_next_event_time(planned_events, now_dt, lambda e: e.start)
+            msg = prefix + self.power_srv.build_power_on_message(voltage, dtek_status, next_outage_str) + suffix
         else:
-            msg = self.cfg.msg_prefix + self.power_srv.build_power_off_message(dtek_status, None)
+            next_conn_str = self._calculate_next_event_time(planned_events, now_dt, lambda e: e.end)
+            msg = prefix + self.power_srv.build_power_off_message(dtek_status, next_conn_str) + suffix
 
         # Dispatch animated notification
         await self.bot.send_animation(
@@ -117,15 +128,23 @@ class PowerMonitor:
         return messages.PLAN_BADGES.get((is_on, dtek_status), fallback)
 
     @staticmethod
-    def _calculate_next_outage(planned_events: list[CalendarEvent], now_dt: datetime) -> str | None:
-        """Finds the earliest upcoming planned outage from calendar events."""
-        future = [e for e in planned_events if e.start > now_dt]
-        if not future:
+    def _calculate_next_event_time(
+            planned_events: list[CalendarEvent],
+            now_dt: datetime,
+            time_getter: Callable[[CalendarEvent], datetime]
+    ) -> str | None:
+        """Finds and formats the earliest upcoming event time based on the provided getter."""
+        # Extract all future datetimes (either starts or ends)
+        future_times = [time_getter(e) for e in planned_events if time_getter(e) > now_dt]
+
+        if not future_times:
             return None
-        next_e = min(future, key=lambda e: e.start)
-        if next_e.start.date() == now_dt.date():
-            return next_e.start.strftime("%H:%M")
-        return next_e.start.strftime("%H:%M (%d.%m)")
+
+        next_dt = min(future_times)
+
+        if next_dt.date() == now_dt.date():
+            return next_dt.strftime("%H:%M")
+        return next_dt.strftime("%H:%M (%d.%m)")
 
     @staticmethod
     def _parse_float(state: dict | None, default: float = 0.0) -> float:

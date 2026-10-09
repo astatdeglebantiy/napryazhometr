@@ -12,6 +12,8 @@ class PowerState(str, Enum):
     def icon(self) -> str:
         """Visual status emoji indicator."""
         return "⬜" if self == PowerState.LIGHT_ON else "⬛"
+        # idk
+        #return "<tg-emoji emoji-id='5458789741136715070'>⬜</tg-emoji>" if self == PowerState.LIGHT_ON else "<tg-emoji emoji-id='5458733511424876694'>⬛</tg-emoji>"
 
 
 @dataclass(frozen=True, slots=True)

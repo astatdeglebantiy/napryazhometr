@@ -101,7 +101,7 @@ class SchedulePublisher:
                     await self.bot.send_animation(
                         chat_id=self.cfg.target_chat_id,
                         animation=FSInputFile(self.cfg.output_image_path),
-                        caption=self.cfg.msg_prefix + caption.strip(),
+                        caption=self.cfg.msg_dev_prefix + caption.strip() + self.cfg.msg_suffix,
                         parse_mode=ParseMode.HTML,
                     )
                     logger.info("Schedule successfully published to Telegram.")

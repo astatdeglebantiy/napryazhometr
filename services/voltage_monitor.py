@@ -105,5 +105,5 @@ class VoltageMonitor:
         """Sends an HTML formatted message with optional prefix."""
         await self.bot.send_message(
             self.cfg.target_chat_id,
-            self.cfg.msg_prefix + text,
+            self.cfg.msg_dev_prefix + text + self.cfg.msg_suffix,
         )
