@@ -1,24 +1,28 @@
+from datetime import datetime, timedelta
+import math
 import os
+from pathlib import Path
 import shutil
 import subprocess
-from datetime import datetime, timedelta
-from pathlib import Path
 from typing import Sequence
 import PIL.Image as Image
 import PIL.ImageDraw as ImageDraw
 import PIL.ImageFont as ImageFont
 import pytz
 
+import messages
 from models.schedule import CalendarEvent
 
 
 class GraphService:
+    """Service for rendering 3-slide looping H.264 infographic videos."""
+
     BASE_WIDTH, BASE_HEIGHT = 1200, 650
     SCALE = 2
     WIDTH = BASE_WIDTH * SCALE
     HEIGHT = BASE_HEIGHT * SCALE
 
-    # Палитра TrueColor
+    # TrueColor Palette
     COLOR_BG = (243, 244, 246)
     COLOR_CARD = (255, 255, 255)
     COLOR_CARD_BORDER = (209, 213, 219)
@@ -35,14 +39,15 @@ class GraphService:
     def __init__(
         self,
         tz_name: str = "Europe/Kyiv",
-        font_path: str = "./font.ttf",
-        logo_path: str = "./logo.png",
+        font_path: str = "./assets/font.ttf",
+        logo_path: str = "./assets/logo.png",
     ):
         self.tz = pytz.timezone(tz_name)
         self.font_path = font_path
         self.logo_path = logo_path
 
     def _get_font(self, size: int, bold: bool = False) -> ImageFont.FreeTypeFont:
+        """Loads scalable TrueType fonts with platform-agnostic fallbacks."""
         scaled_size = size * self.SCALE
         candidates = [self.font_path]
         if bold:
@@ -78,51 +83,41 @@ class GraphService:
         frequency_val: float | str | None = None,
         group_name: str = "Група 4.1",
     ) -> str:
-        """Создает чистое видео MP4 с плавным горизонтальным перемещением (Slide Transition)."""
-        import math
-
+        """Renders 3 infographic slides and encodes them with smooth horizontal slide transitions."""
         events = self._normalize_events(planned)
         now = datetime.now(self.tz).replace(second=0, microsecond=0)
 
-        # 1. Рендерим 3 экрана
+        # 1. Render three individual static slides
         s1 = self._render_slide_current(events, now, voltage_val, group_name)
         s2 = self._render_slide_week(events, now, group_name)
         s3 = self._render_slide_status_card(now, voltage_val, frequency_val, group_name)
 
         fps = 30
-        # Длительность показа каждого слайда (в секундах)
-        hold_s1 = int(7.0 * fps)  # 7 сек на оперативный таймлайн
-        hold_s2 = int(8.0 * fps)  # 8 сек на график недели
-        hold_s3 = int(4.0 * fps)  # 4 сек на статус и вольтметр
-
-        # Длительность сдвига: 0.6 сек на переход
-        transition_frames = int(0.6 * fps)
+        # Slide display durations in seconds
+        hold_s1 = int(7.0 * fps)
+        hold_s2 = int(8.0 * fps)
+        hold_s3 = int(4.0 * fps)
+        transition_frames = int(0.6 * fps)  # 0.6s horizontal push transition
 
         video_frames: list[Image.Image] = []
 
         def add_smooth_slide(img_from: Image.Image, img_to: Image.Image):
-            """Плавное горизонтальное перемещение со сглаживанием Ease-in-out."""
+            """Applies sinusoidal ease-in-out horizontal push transition."""
             for i in range(1, transition_frames + 1):
                 t = i / (transition_frames + 1)
-                # Функция синусоидального сглаживания (плавный старт и мягкая остановка)
-                eased_progress = 0.5 * (1.0 - math.cos(math.pi * t))
-                offset_x = int(eased_progress * self.BASE_WIDTH)
+                eased = 0.5 * (1.0 - math.cos(math.pi * t))
+                offset_x = int(eased * self.BASE_WIDTH)
 
-                # Создаем кадр со смещением: старый уезжает влево, новый въезжает справа
                 canvas = Image.new("RGB", (self.BASE_WIDTH, self.BASE_HEIGHT), self.COLOR_BG)
                 canvas.paste(img_from, (-offset_x, 0))
                 canvas.paste(img_to, (self.BASE_WIDTH - offset_x, 0))
                 video_frames.append(canvas)
 
-        # Слайд 1 -> Сдвиг -> Слайд 2
+        # Assemble looping video sequence
         video_frames.extend([s1] * hold_s1)
         add_smooth_slide(s1, s2)
-
-        # Слайд 2 -> Сдвиг -> Слайд 3
         video_frames.extend([s2] * hold_s2)
         add_smooth_slide(s2, s3)
-
-        # Слайд 3 -> Сдвиг -> Закольцовка на Слайд 1
         video_frames.extend([s3] * hold_s3)
         add_smooth_slide(s3, s1)
 
@@ -131,14 +126,14 @@ class GraphService:
         return out_path
 
     def _encode_video(self, frames: list[Image.Image], out_path: str, fps: int):
-        """Кодирует кадры в H.264 yuv420p через системный ffmpeg или imageio."""
+        """Encodes frame buffers to H.264 yuv420p video via ffmpeg pipe or imageio."""
         ffmpeg_bin = shutil.which("ffmpeg")
 
-        # Если ffmpeg установлен в системе (самый быстрый и надежный путь)
         if ffmpeg_bin:
             cmd = [
                 ffmpeg_bin,
                 "-y",
+                "-loglevel", "error",
                 "-f", "rawvideo",
                 "-vcodec", "rawvideo",
                 "-s", f"{self.BASE_WIDTH}x{self.BASE_HEIGHT}",
@@ -156,16 +151,14 @@ class GraphService:
                 cmd,
                 stdin=subprocess.PIPE,
                 stdout=subprocess.DEVNULL,
-                stderr=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
             )
-            for f in frames:
-                proc.stdin.write(f.tobytes())
-            proc.stdin.close()
-            proc.wait()
+            raw_data = b"".join(f.tobytes() for f in frames)
+            proc.communicate(input=raw_data)
             if proc.returncode == 0:
                 return
 
-        # Запасной вариант через imageio / imageio-ffmpeg
+        # Fallback to imageio when ffmpeg CLI is missing
         try:
             import imageio.v3 as iio
             import numpy as np
@@ -174,12 +167,9 @@ class GraphService:
             iio.imwrite(out_path, arr_frames, fps=fps, codec="libx264")
             return
         except Exception as e:
-            raise RuntimeError(
-                f"Не удалось закодировать MP4. Установите ffmpeg в систему (sudo apt/pacman install ffmpeg) "
-                f"или pip install imageio-ffmpeg. Ошибка: {e}"
-            )
+            raise RuntimeError(f"Video encoding failed. Please install ffmpeg or imageio-ffmpeg: {e}")
 
-    # ==================== СЛАЙД 1: ТАЙМЛАЙН ====================
+    # ==================== SLIDE 1: 24H TIMELINE ====================
     def _render_slide_current(self, events: list[CalendarEvent], now: datetime, voltage_val, group_name: str) -> Image.Image:
         img = Image.new("RGBA", (self.WIDTH, self.HEIGHT), color=self.COLOR_BG)
         draw = ImageDraw.Draw(img)
@@ -197,14 +187,22 @@ class GraphService:
         bar_h = int(105 * self.SCALE)
         bar_r = int(12 * self.SCALE)
 
-        draw.rounded_rectangle([(0, bar_y), (self.WIDTH, bar_y + bar_h)], radius=bar_r, fill=self.COLOR_CARD, outline=self.COLOR_CARD_BORDER, width=2 * self.SCALE)
+        draw.rounded_rectangle(
+            [(0, bar_y), (self.WIDTH, bar_y + bar_h)],
+            radius=bar_r,
+            fill=self.COLOR_CARD,
+            outline=self.COLOR_CARD_BORDER,
+            width=2 * self.SCALE,
+        )
 
+        # Draw unpublished timeline zone for tomorrow
         has_tomorrow = any(e.end.timestamp() > tomorrow_start_ts for e in events)
         if not has_tomorrow and end_ts > tomorrow_start_ts:
             x_unk = max(0, get_x(tomorrow_start_ts))
             if x_unk < self.WIDTH:
                 draw.rectangle([(x_unk, bar_y), (self.WIDTH, bar_y + bar_h)], fill=self.COLOR_UNKNOWN)
 
+        # Outage scheduled blocks
         for e in events:
             s_ts, e_ts = e.start.timestamp(), e.end.timestamp()
             if e_ts < start_ts or s_ts > end_ts:
@@ -213,6 +211,7 @@ class GraphService:
             if x2 > x1:
                 draw.rectangle([(x1, bar_y), (x2, bar_y + bar_h)], fill=self.COLOR_OFF)
 
+        # Time grid markers
         curr = start_dt.replace(minute=0, second=0, microsecond=0)
         f_time = self._get_font(22, bold=False)
         f_date = self._get_font(18, bold=True)
@@ -230,11 +229,13 @@ class GraphService:
                 draw.text((xg - (bbox[2] - bbox[0]) // 2, bar_y + bar_h + 10 * self.SCALE), t_str, fill=self.COLOR_TEXT_MUTED, font=f_time)
             curr += timedelta(hours=1)
 
+        # Current time cursor needle
         mid_x = self.WIDTH // 2
         draw.line([(mid_x, bar_y - 12 * self.SCALE), (mid_x, bar_y + bar_h + 8 * self.SCALE)], fill=self.COLOR_YELLOW, width=3 * self.SCALE)
 
+        # "NOW" badge
         f_now = self._get_font(18, bold=True)
-        now_str = "ЗАРАЗ"
+        now_str = messages.CHART_BADGE_NOW
         bb = draw.textbbox((0, 0), now_str, font=f_now)
         tw, th = bb[2] - bb[0], bb[3] - bb[1]
         pad_x, pad_y = int(14 * self.SCALE), int(6 * self.SCALE)
@@ -247,36 +248,24 @@ class GraphService:
         draw.text((mid_x - tw // 2, badge_top + pad_y - int(2 * self.SCALE)), now_str, fill=(25, 25, 25), font=f_now)
 
         self._draw_voltmeter(draw, mid_x, badge_top - int(35 * self.SCALE), voltage_val)
-        self._draw_header(img, draw, group_name, now, subtitle="Оперативний зріз (24 години)")
+        self._draw_header(img, draw, group_name, now, subtitle=messages.CHART_SUBTITLE_CURRENT)
         self._draw_legend(draw)
 
         return img.resize((self.BASE_WIDTH, self.BASE_HEIGHT), resample=Image.Resampling.LANCZOS).convert("RGB")
 
-    # ==================== СЛАЙД 2: ТИЖДЕНЬ ====================
+    # ==================== SLIDE 2: WEEK OVERVIEW ====================
     def _render_slide_week(self, events: list[CalendarEvent], now: datetime, group_name: str) -> Image.Image:
         img = Image.new("RGBA", (self.WIDTH, self.HEIGHT), color=self.COLOR_BG)
         draw = ImageDraw.Draw(img)
 
-        self._draw_header(img, draw, group_name, now, subtitle="Тижневий графік відключень")
+        self._draw_header(img, draw, group_name, now, subtitle=messages.CHART_SUBTITLE_WEEK)
 
         f_day = self._get_font(20, bold=True)
         f_sub = self._get_font(16, bold=False)
 
-        # Украинские названия дней недели (0 = Понеділок, 6 = Неділя)
-        UA_WEEKDAYS = [
-            "Понеділок",
-            "Вівторок",
-            "Середа",
-            "Четвер",
-            "П'ятниця",
-            "Субота",
-            "Неділя"
-        ]
-
         today = now.date()
         days = [today + timedelta(days=i) for i in range(6)]
 
-        # Сдвигаем начало полос чуть правее (175 вместо 160), чтобы длинные слова (Понеділок/П'ятниця) не прилипали
         chart_x = int(175 * self.SCALE)
         chart_w = self.WIDTH - chart_x - int(40 * self.SCALE)
         start_y = int(140 * self.SCALE)
@@ -287,31 +276,35 @@ class GraphService:
             ry = start_y + idx * row_h
             d_start = self.tz.localize(datetime.combine(d, datetime.min.time()))
             d_end = d_start + timedelta(days=1)
-
             d_label = d.strftime("%d.%m")
 
-            # Первые два дня — Сьогодні и Завтра, начиная с 3-го дня — украинский день недели
             if idx == 0:
-                name_label = "Сьогодні"
+                name_label = messages.LABEL_TODAY
             elif idx == 1:
-                name_label = "Завтра"
+                name_label = messages.LABEL_TOMORROW
             else:
-                name_label = UA_WEEKDAYS[d.weekday()]
+                name_label = messages.WEEKDAY_NAMES_UA[d.weekday()]
 
             draw.text((int(35 * self.SCALE), ry), name_label, fill=self.COLOR_TEXT, font=f_day)
-            draw.text((int(35 * self.SCALE), ry + int(22 * self.SCALE)), d_label, fill=self.COLOR_TEXT_MUTED,
-                      font=f_sub)
+            draw.text((int(35 * self.SCALE), ry + int(22 * self.SCALE)), d_label, fill=self.COLOR_TEXT_MUTED, font=f_sub)
 
-            # Базовая полоса суток
             bx1, bx2 = chart_x, chart_x + chart_w
-            draw.rounded_rectangle([(bx1, ry), (bx2, ry + bar_h)], radius=int(6 * self.SCALE), fill=self.COLOR_CARD,
-                                   outline=self.COLOR_CARD_BORDER, width=int(1.5 * self.SCALE))
+            draw.rounded_rectangle(
+                [(bx1, ry), (bx2, ry + bar_h)],
+                radius=int(6 * self.SCALE),
+                fill=self.COLOR_CARD,
+                outline=self.COLOR_CARD_BORDER,
+                width=int(1.5 * self.SCALE),
+            )
 
             day_events = [e for e in events if e.start < d_end and e.end > d_start]
 
             if not day_events and d > today + timedelta(days=1):
-                draw.rounded_rectangle([(bx1, ry), (bx2, ry + bar_h)], radius=int(6 * self.SCALE),
-                                       fill=self.COLOR_UNKNOWN)
+                draw.rounded_rectangle(
+                    [(bx1, ry), (bx2, ry + bar_h)],
+                    radius=int(6 * self.SCALE),
+                    fill=self.COLOR_UNKNOWN,
+                )
             else:
                 for e in day_events:
                     s = max(d_start, e.start)
@@ -327,58 +320,55 @@ class GraphService:
         axis_y = start_y + len(days) * row_h + int(10 * self.SCALE)
         for h in [0, 6, 12, 18, 24]:
             ax_x = chart_x + int((h / 24) * chart_w)
-            draw.line([(ax_x, start_y - int(10 * self.SCALE)), (ax_x, axis_y)], fill=self.COLOR_GRID,
-                      width=int(1.5 * self.SCALE))
-            draw.text((ax_x - int(18 * self.SCALE), axis_y + int(4 * self.SCALE)), f"{h:02d}:00",
-                      fill=self.COLOR_TEXT_MUTED, font=f_axis)
+            draw.line([(ax_x, start_y - int(10 * self.SCALE)), (ax_x, axis_y)], fill=self.COLOR_GRID, width=int(1.5 * self.SCALE))
+            draw.text((ax_x - int(18 * self.SCALE), axis_y + int(4 * self.SCALE)), f"{h:02d}:00", fill=self.COLOR_TEXT_MUTED, font=f_axis)
 
         self._draw_legend(draw)
         return img.resize((self.BASE_WIDTH, self.BASE_HEIGHT), resample=Image.Resampling.LANCZOS).convert("RGB")
 
-    # ==================== СЛАЙД 3: КАРТКА СТАТУСУ ====================
+    # ==================== SLIDE 3: NETWORK STATUS ====================
     def _render_slide_status_card(self, now: datetime, voltage_val, frequency_val, group_name: str) -> Image.Image:
         img = Image.new("RGBA", (self.WIDTH, self.HEIGHT), color=self.COLOR_BG)
         draw = ImageDraw.Draw(img)
 
-        self._draw_header(img, draw, group_name, now, subtitle="Діагностика напруги в реальному часі")
+        self._draw_header(img, draw, group_name, now, subtitle=messages.CHART_SUBTITLE_STATUS)
 
         f_big_v = self._get_font(120, bold=True)
         f_big_unit = self._get_font(130, bold=True)
         f_card_title = self._get_font(28, bold=True)
         f_card_desc = self._get_font(22, bold=False)
 
-        # 1. Парсинг вольтажа
+        # Parse voltage
         try:
             val_f = float(voltage_val) if voltage_val not in (None, "unknown", "unavailable", "", "—") else 0.0
             v_num = str(int(round(val_f))) if val_f > 0 else "--"
         except Exception:
             val_f, v_num = 0.0, "--"
 
-        # 2. Парсинг частоты
+        # Parse frequency
         try:
             freq_f = float(frequency_val) if frequency_val not in (None, "unknown", "unavailable", "", "—") else 0.0
             freq_display = f"{freq_f:.1f} Hz" if freq_f > 0 else "—"
         except Exception:
             freq_display = "—"
 
-        # 3. Корректные статусы (свет есть / света нет / отклонение)
+        # Determine visual indicator colors
         if val_f == 0 or v_num == "--":
-            status_color = self.COLOR_TEXT_MUTED  # Спокойный серый
-            status_text = "ЖИВЛЕННЯ ВІДСУТНЄ (МЕРЕЖА ЗНЕСТРУМЛЕНА)"
+            status_color = self.COLOR_TEXT_MUTED
+            status_text = messages.CHART_STATUS_NO_POWER
             unit_color = self.COLOR_TEXT_MUTED
             num_color = self.COLOR_TEXT_MUTED
         elif 200 <= val_f <= 245:
-            status_color = self.COLOR_GREEN_OK  # Зеленый
-            status_text = "МЕРЕЖА СТАБІЛЬНА (НОРМА)"
+            status_color = self.COLOR_GREEN_OK
+            status_text = messages.CHART_STATUS_NORMAL
             unit_color = self.COLOR_YELLOW
             num_color = self.COLOR_TEXT
         else:
-            status_color = self.COLOR_RED_WARN  # Красный (реальная авария по напряжению)
-            status_text = "УВАГА: ВІДХИЛЕННЯ НАПРУГИ"
+            status_color = self.COLOR_RED_WARN
+            status_text = messages.CHART_STATUS_ALERT
             unit_color = self.COLOR_RED_WARN
             num_color = self.COLOR_RED_WARN
 
-        # Большая белая карточка
         card_w = int(1000 * self.SCALE)
         card_h = int(360 * self.SCALE)
         cx1 = (self.WIDTH - card_w) // 2
@@ -392,7 +382,6 @@ class GraphService:
             width=2 * self.SCALE,
         )
 
-        # Цифры вольтметра
         b_num = draw.textbbox((0, 0), v_num, font=f_big_v)
         b_unit = draw.textbbox((0, 0), "V", font=f_big_unit)
         wn, wu = b_num[2] - b_num[0], b_unit[2] - b_unit[0]
@@ -401,10 +390,8 @@ class GraphService:
         vy = cy1 + int(45 * self.SCALE)
 
         draw.text((vx, vy), v_num, fill=num_color, font=f_big_v)
-        draw.text((vx + wn + int(20 * self.SCALE), vy - int(10 * self.SCALE)), "V", fill=unit_color,
-                  font=f_big_unit)
+        draw.text((vx + wn + int(20 * self.SCALE), vy - int(10 * self.SCALE)), "V", fill=unit_color, font=f_big_unit)
 
-        # Центральный бейдж статуса
         badge_y = cy1 + int(210 * self.SCALE)
         bb_st = draw.textbbox((0, 0), status_text, font=f_card_title)
         btw = bb_st[2] - bb_st[0]
@@ -417,8 +404,7 @@ class GraphService:
         )
         draw.text((bx, badge_y + int(8 * self.SCALE)), status_text, fill=(255, 255, 255), font=f_card_title)
 
-        # ОДНА ровная строка внизу: датчик и частота сети (автоматически по центру)
-        bottom_desc = f"Моніторинг реле PZEM • Частота: {freq_display}"
+        bottom_desc = messages.CHART_DIAGNOSTICS_FOOTER.format(freq_display=freq_display)
         bb_desc = draw.textbbox((0, 0), bottom_desc, font=f_card_desc)
         dw = bb_desc[2] - bb_desc[0]
         draw.text(
@@ -432,6 +418,7 @@ class GraphService:
         return img.resize((self.BASE_WIDTH, self.BASE_HEIGHT), resample=Image.Resampling.LANCZOS).convert("RGB")
 
     def _draw_voltmeter(self, draw: ImageDraw.ImageDraw, mid_x: int, top_anchor_y: int, voltage_val):
+        """Draws current voltage indicator numbers."""
         f_num = self._get_font(84, bold=True)
         f_unit = self._get_font(110, bold=True)
         try:
@@ -457,24 +444,20 @@ class GraphService:
         draw.text((sx + wn + int(12 * self.SCALE), base_y - hu - int(6 * self.SCALE)), "V", fill=uc, font=f_unit)
 
     def _find_logo_path(self) -> str | None:
-        """Автоматически ищет файл логотипа в проекте."""
-        candidates = [
-            self.logo_path,
-            "./logo.png",
-            "./assets/logo.png",
-        ]
+        """Finds valid project logo file path."""
+        candidates = [self.logo_path, "./assets/logo.png", "./logo.png"]
         for p in candidates:
             if p and os.path.exists(p):
                 return p
         return None
 
     def _draw_header(self, img: Image.Image, draw: ImageDraw.ImageDraw, group_name: str, now: datetime, subtitle: str):
+        """Draws top brand header with embedded logo."""
         f_title = self._get_font(30, bold=True)
         f_sub = self._get_font(20, bold=False)
         mx = int(35 * self.SCALE)
         ty = int(25 * self.SCALE)
 
-        # Отрисовка логотипа (если найден файл)
         logo_file = self._find_logo_path()
         if logo_file:
             try:
@@ -482,19 +465,15 @@ class GraphService:
                 target_h = int(52 * self.SCALE)
                 target_w = int(target_h * (logo.width / logo.height))
                 logo = logo.resize((target_w, target_h), Image.Resampling.LANCZOS)
-
-                # Вставляем логотип с поддержкой прозрачности
                 img.paste(logo, (mx, ty), logo)
                 mx += target_w + int(14 * self.SCALE)
             except Exception:
                 pass
 
-        # Название и подзаголовок слева
-        draw.text((mx, ty), "@Napryazhometr", fill=self.COLOR_TEXT, font=f_title)
+        draw.text((mx, ty), messages.CHART_TITLE, fill=self.COLOR_TEXT, font=f_title)
         draw.text((mx, ty + int(36 * self.SCALE)), subtitle, fill=self.COLOR_TEXT_MUTED, font=f_sub)
 
-        # Группа и время справа
-        r_sub = f"Оновлено о {now.strftime('%H:%M')}"
+        r_sub = messages.CHART_HEADER_UPDATED.format(time_str=now.strftime("%H:%M"))
         bt = draw.textbbox((0, 0), group_name, font=f_title)
         bs = draw.textbbox((0, 0), r_sub, font=f_sub)
 
@@ -503,8 +482,13 @@ class GraphService:
         draw.text((rx - (bs[2] - bs[0]), ty + int(36 * self.SCALE)), r_sub, fill=self.COLOR_TEXT_MUTED, font=f_sub)
 
     def _draw_legend(self, draw: ImageDraw.ImageDraw):
+        """Draws horizontal bottom status legend."""
         f_leg = self._get_font(24, bold=False)
-        items = [("Світло є", self.COLOR_CARD, self.COLOR_CARD_BORDER), ("Відключення", self.COLOR_OFF, None), ("Графік відсутній", self.COLOR_UNKNOWN, None)]
+        items = [
+            (messages.CHART_LEGEND_ON, self.COLOR_CARD, self.COLOR_CARD_BORDER),
+            (messages.CHART_LEGEND_OFF, self.COLOR_OFF, None),
+            (messages.CHART_LEGEND_UNKNOWN, self.COLOR_UNKNOWN, None),
+        ]
         box_sz = int(24 * self.SCALE)
         gap_txt = int(10 * self.SCALE)
         gap_item = int(40 * self.SCALE)
@@ -514,12 +498,19 @@ class GraphService:
         cx = (self.WIDTH - total_w) // 2
 
         for txt, fill_col, out_col in items:
-            draw.rounded_rectangle([(cx, ly), (cx + box_sz, ly + box_sz)], radius=int(4 * self.SCALE), fill=fill_col, outline=out_col, width=int(1.5 * self.SCALE) if out_col else 0)
+            draw.rounded_rectangle(
+                [(cx, ly), (cx + box_sz, ly + box_sz)],
+                radius=int(4 * self.SCALE),
+                fill=fill_col,
+                outline=out_col,
+                width=int(1.5 * self.SCALE) if out_col else 0,
+            )
             draw.text((cx + box_sz + gap_txt, ly - int(2 * self.SCALE)), txt, fill=self.COLOR_TEXT, font=f_leg)
             cx += box_sz + gap_txt + draw.textbbox((0, 0), txt, font=f_leg)[2] + gap_item
 
     def _normalize_events(self, raw_events: Sequence) -> list[CalendarEvent]:
-        events = []
+        """Ensures all events are standardized into timezone-aware CalendarEvent models."""
+        events: list[CalendarEvent] = []
         for e in raw_events:
             if isinstance(e, CalendarEvent):
                 events.append(e)

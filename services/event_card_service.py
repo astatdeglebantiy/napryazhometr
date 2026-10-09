@@ -5,13 +5,13 @@ from pathlib import Path
 import random
 import shutil
 import subprocess
-from typing import Sequence
 import PIL.Image as Image
 import PIL.ImageDraw as ImageDraw
 import PIL.ImageFont as ImageFont
 import PIL.ImageSequence as ImageSequence
 import pytz
 
+import messages
 from models.schedule import CalendarEvent
 
 
@@ -21,12 +21,13 @@ class EventCardService:
     WIDTH = BASE_WIDTH * SCALE
     HEIGHT = BASE_HEIGHT * SCALE
 
+    # Color Palette
     COLOR_BG = (243, 244, 246)
     COLOR_CARD = (255, 255, 255)
     COLOR_CARD_BORDER = (209, 213, 219)
-    COLOR_ON = (34, 197, 94)            # Сочный зеленый для факта наличия света
-    COLOR_OFF = (31, 41, 55)            # Темно-графитовый для отключений
-    COLOR_DIMMED = (229, 231, 235)      # Серый для будущих часов
+    COLOR_ON = (34, 197, 94)
+    COLOR_OFF = (31, 41, 55)
+    COLOR_DIMMED = (229, 231, 235)
     COLOR_TEXT = (17, 24, 39)
     COLOR_TEXT_MUTED = (107, 114, 128)
     COLOR_RED = (239, 68, 68)
@@ -43,7 +44,7 @@ class EventCardService:
         self.logo_path = logo_path
 
     def _find_logo_path(self) -> str | None:
-        """Ищет логотип в assets или корне проекта."""
+        """Searches for the project logo in assets or root directory."""
         candidates = [self.logo_path, "./assets/logo.png", "./logo.png"]
         for p in candidates:
             if p and os.path.exists(p):
@@ -58,7 +59,7 @@ class EventCardService:
         subtitle: str,
         right_text: str | None = None,
     ):
-        """Единая шапка с автоматическим встраиванием логотипа."""
+        """Draws unified brand header with automatic logo placement."""
         f_hdr = self._get_font(32, bold=True)
         f_sub = self._get_font(22, bold=False)
         mx = int(40 * self.SCALE)
@@ -89,6 +90,7 @@ class EventCardService:
             )
 
     def _get_font(self, size: int, bold: bool = False) -> ImageFont.FreeTypeFont:
+        """Loads TTF fonts with graceful fallbacks."""
         scaled_size = size * self.SCALE
         candidates = [self.font_path]
         if bold:
@@ -123,42 +125,40 @@ class EventCardService:
         out_path: str,
         group_name: str = "Група 4.1",
     ) -> str:
-        """Генерирует 3-сценное видео: Живой мем -> Карточка статуса -> План vs Факт."""
+        """Generates a 3-scene animation: Meme intro -> Status details -> Plan vs Fact comparison."""
         now = datetime.now(self.tz)
 
-        # 1. Рендерим кадр статуса (Сцена 2)
+        # Pre-render static frames for scenes 2 and 3
         frame_status = self._render_status_card(
             is_power_on, voltage_val, freq_val, duration_str, plan_badge_text, now, group_name
         )
-
-        # 2. Рендерим кадр "План vs Факт" (Сцена 3)
         frame_comparison = self._render_plan_vs_fact(
-            planned_events, fact_history or [], is_power_on, now, group_name
+            planned_events, fact_history or [], now, group_name
         )
 
         fps = 30
-        meme_hold = int(1.3 * fps)        # 1.3 сек держится мем
-        fade_frames = int(0.4 * fps)      # 0.4 сек растворение мема в статус
-        status_hold = int(2.4 * fps)      # 2.4 сек показ статуса
-        slide_frames = int(0.6 * fps)     # 0.6 сек сдвиг в "План vs Факт"
-        comp_hold = int(3.5 * fps)        # 3.5 сек показ "План vs Факт"
+        meme_hold = int(1.3 * fps)        # 1.3 sec meme display
+        fade_frames = int(0.4 * fps)      # 0.4 sec fade to status card
+        status_hold = int(2.4 * fps)      # 2.4 sec status card display
+        slide_frames = int(0.6 * fps)     # 0.6 sec horizontal slide transition
+        comp_hold = int(3.5 * fps)        # 3.5 sec comparison card display
 
         frames: list[Image.Image] = []
 
-        # === СЦЕНА 1: МЕМ (.GIF, .MP4 или картинка) ===
+        # === SCENE 1: MEME INTRO ===
         meme_frames = self._load_meme_frames(is_power_on, meme_hold)
         frames.extend(meme_frames)
 
-        # Растворение мема в карточку статуса
+        # Dissolve meme into status card
         last_meme = meme_frames[-1]
         for i in range(1, fade_frames + 1):
             alpha = i / (fade_frames + 1)
             frames.append(Image.blend(last_meme, frame_status, alpha))
 
-        # === СЦЕНА 2: ДЕТАЛИ СОБЫТИЯ ===
+        # === SCENE 2: STATUS DETAILS ===
         frames.extend([frame_status] * status_hold)
 
-        # Плавный сдвиг карточки статуса в "План vs Факт" (Push-карусель)
+        # Horizontal push transition to Plan vs Fact
         for i in range(1, slide_frames + 1):
             t = i / (slide_frames + 1)
             eased = 0.5 * (1.0 - math.cos(math.pi * t))
@@ -168,10 +168,10 @@ class EventCardService:
             c.paste(frame_comparison, (self.BASE_WIDTH - dx, 0))
             frames.append(c)
 
-        # === СЦЕНА 3: ПЛАН VS ФАКТ ===
+        # === SCENE 3: PLAN VS FACT ===
         frames.extend([frame_comparison] * comp_hold)
 
-        # Мягкая закольцовка обратно на мем
+        # Loop transition back to first meme frame
         first_meme = meme_frames[0]
         for i in range(1, fade_frames + 1):
             alpha = i / (fade_frames + 1)
@@ -181,9 +181,9 @@ class EventCardService:
         self._encode_video(frames, out_path, fps)
         return out_path
 
-    # ==================== ОБРАБОТКА МЕМОВ ====================
+    # ==================== MEME PROCESSING ====================
     def _fit_to_canvas(self, raw_m: Image.Image) -> Image.Image:
-        """Центрирует изображение мема на холсте 1200x650 с сохранением пропорций."""
+        """Centers meme image on the standard canvas maintaining aspect ratio."""
         canvas = Image.new("RGB", (self.BASE_WIDTH, self.BASE_HEIGHT), self.COLOR_BG)
         target_h = int(self.BASE_HEIGHT * 0.85)
         target_w = int(target_h * (raw_m.width / raw_m.height))
@@ -198,7 +198,7 @@ class EventCardService:
         return canvas
 
     def _load_meme_frames(self, is_power_on: bool, target_count: int) -> list[Image.Image]:
-        """Загружает мем (.gif, .mp4, .png, .jpg) и возвращает нужные N кадров анимации."""
+        """Loads and extracts frames from animated GIFs, MP4 videos, or static images."""
         subfolder = "on" if is_power_on else "off"
         meme_dir = Path(f"./assets/memes/{subfolder}")
         candidates = (
@@ -216,7 +216,7 @@ class EventCardService:
         chosen = random.choice(candidates)
         ext = chosen.suffix.lower()
 
-        # 1. Анимированный GIF
+        # 1. Animated GIF
         if ext == ".gif":
             try:
                 with Image.open(chosen) as g:
@@ -226,7 +226,7 @@ class EventCardService:
             except Exception:
                 pass
 
-        # 2. Видео MP4
+        # 2. MP4 Video clip
         elif ext == ".mp4":
             try:
                 import imageio.v3 as iio
@@ -241,7 +241,7 @@ class EventCardService:
             except Exception:
                 pass
 
-        # 3. Статичные картинки (PNG, JPG, WEBP)
+        # 3. Static image (PNG, JPG, WEBP)
         try:
             with Image.open(chosen) as img:
                 single_frame = self._fit_to_canvas(img.convert("RGBA"))
@@ -253,46 +253,39 @@ class EventCardService:
         return [default_f] * target_count
 
     def _render_default_meme(self, is_power_on: bool) -> Image.Image:
-        """Авто-заставка, если пользователь еще не добавил мемы."""
+        """Generates fallback graphic if no user memes are present."""
         img = Image.new("RGB", (self.WIDTH, self.HEIGHT), color=self.COLOR_BG)
         draw = ImageDraw.Draw(img)
         f_huge = self._get_font(110, bold=True)
         f_sub = self._get_font(32, bold=False)
 
         icon = "💡" if is_power_on else "🔌"
-        title = "СВІТЛО ПОВЕРНУЛОСЯ!" if is_power_on else "ТЕМРЯВА НАСТАЛА..."
+        title = messages.DEFAULT_MEME_TITLE_ON if is_power_on else messages.DEFAULT_MEME_TITLE_OFF
         col = self.COLOR_ON if is_power_on else self.COLOR_OFF
 
         b1 = draw.textbbox((0, 0), icon, font=f_huge)
-        draw.text(((self.WIDTH - (b1[2]-b1[0])) // 2, int(180 * self.SCALE)), icon, font=f_huge)
+        draw.text(((self.WIDTH - (b1[2] - b1[0])) // 2, int(180 * self.SCALE)), icon, font=f_huge)
         b2 = draw.textbbox((0, 0), title, font=f_sub)
-        draw.text(((self.WIDTH - (b2[2]-b2[0])) // 2, int(350 * self.SCALE)), title, fill=col, font=f_sub)
+        draw.text(((self.WIDTH - (b2[2] - b2[0])) // 2, int(350 * self.SCALE)), title, fill=col, font=f_sub)
         return img.resize((self.BASE_WIDTH, self.BASE_HEIGHT), resample=Image.Resampling.LANCZOS)
 
-    # ==================== СЦЕНА 2: ДЕТАЛИ ====================
+    # ==================== SCENE 2: STATUS CARD ====================
     def _render_status_card(
-            self, is_power_on: bool, voltage_val: str, freq_val: str,
-            dur_str: str, plan_badge: str, now: datetime, group_name: str
+        self, is_power_on: bool, voltage_val: str, freq_val: str,
+        dur_str: str, plan_badge: str, now: datetime, group_name: str
     ) -> Image.Image:
         img = Image.new("RGB", (self.WIDTH, self.HEIGHT), color=self.COLOR_BG)
         draw = ImageDraw.Draw(img)
 
-        f_hdr = self._get_font(32, bold=True)
-        f_sub = self._get_font(22, bold=False)
         f_title = self._get_font(48, bold=True)
         f_stat = self._get_font(26, bold=True)
         f_desc = self._get_font(22, bold=False)
 
-        # Шапка
+        # Header with single right-text placement
         rx_text = f"{group_name} • {now.strftime('%H:%M')}"
-        self._draw_header(img, draw, "@Napryazhometr", "Оперативне сповіщення мережі", right_text=rx_text)
+        self._draw_header(img, draw, messages.CARD_HEADER_TITLE, messages.CARD_SUBTITLE_EVENT, right_text=rx_text)
 
-        rx_text = f"{group_name} • {now.strftime('%H:%M')}"
-        b_rx = draw.textbbox((0, 0), rx_text, font=f_hdr)
-        draw.text((self.WIDTH - int(40 * self.SCALE) - (b_rx[2] - b_rx[0]), int(30 * self.SCALE)), rx_text,
-                  fill=self.COLOR_TEXT, font=f_hdr)
-
-        # Главная карточка
+        # Main background container
         card_y = int(120 * self.SCALE)
         card_h = int(470 * self.SCALE)
         draw.rounded_rectangle(
@@ -301,28 +294,24 @@ class EventCardService:
         )
 
         color_theme = self.COLOR_ON if is_power_on else self.COLOR_RED
-        status_text = "СВІТЛО З'ЯВИЛОСЯ" if is_power_on else "СВІТЛО ВИМКНУЛИ"
+        status_text = messages.CARD_STATUS_ON if is_power_on else messages.CARD_STATUS_OFF
 
-        # Векторный круглый индикатор статуса (вместо неработающего эмодзи 🟢/🔴)
+        # Vector status indicator dot
         dot_r = int(14 * self.SCALE)
         dot_x = int(80 * self.SCALE)
         title_y = card_y + int(45 * self.SCALE)
         dot_center_y = title_y + int(24 * self.SCALE)
         draw.ellipse([(dot_x, dot_center_y - dot_r), (dot_x + dot_r * 2, dot_center_y + dot_r)], fill=color_theme)
-
-        # Текст статуса рядом с индикатором
         draw.text((dot_x + dot_r * 2 + int(18 * self.SCALE), title_y), status_text, fill=color_theme, font=f_title)
 
-        # Время и статус
-        t_label = f"Час фіксації: {now.strftime('%H:%M')}"
-        draw.text((int(80 * self.SCALE), card_y + int(125 * self.SCALE)), t_label, fill=self.COLOR_TEXT,
-                  font=f_stat)
+        # Recorded time and duration
+        t_label = messages.CARD_LABEL_RECORDED_TIME.format(time_str=now.strftime("%H:%M"))
+        draw.text((int(80 * self.SCALE), card_y + int(125 * self.SCALE)), t_label, fill=self.COLOR_TEXT, font=f_stat)
 
         if dur_str:
-            draw.text((int(80 * self.SCALE), card_y + int(175 * self.SCALE)), dur_str, fill=self.COLOR_TEXT_MUTED,
-                      font=f_desc)
+            draw.text((int(80 * self.SCALE), card_y + int(175 * self.SCALE)), dur_str, fill=self.COLOR_TEXT_MUTED, font=f_desc)
 
-        # Очищаем текст бейджа от непечатаемых смайлов
+        # Clean plan badge (stripping non-renderable emoji characters)
         clean_badge = (
             plan_badge.replace("🎰", "")
             .replace("✅", "")
@@ -336,48 +325,45 @@ class EventCardService:
         bw = bb_b[2] - bb_b[0] + int(50 * self.SCALE)
         bh = int(50 * self.SCALE)
 
-        draw.rounded_rectangle([(int(80 * self.SCALE), badge_y), (int(80 * self.SCALE) + bw, badge_y + bh)],
-                               radius=int(8 * self.SCALE), fill=self.COLOR_BG)
+        draw.rounded_rectangle(
+            [(int(80 * self.SCALE), badge_y), (int(80 * self.SCALE) + bw, badge_y + bh)],
+            radius=int(8 * self.SCALE), fill=self.COLOR_BG
+        )
 
-        # Точка внутри бейджа
-        badge_dot_col = self.COLOR_ON if (
-                    "планом" in clean_badge.lower() or "пощастило" in clean_badge.lower()) else self.COLOR_RED
+        badge_dot_col = self.COLOR_ON if ("планом" in clean_badge.lower() or "пощастило" in clean_badge.lower()) else self.COLOR_RED
         b_dot_r = int(6 * self.SCALE)
-        draw.ellipse([(int(100 * self.SCALE), badge_y + int(19 * self.SCALE)),
-                      (int(100 * self.SCALE) + b_dot_r * 2, badge_y + int(19 * self.SCALE) + b_dot_r * 2)],
-                     fill=badge_dot_col)
-        draw.text((int(122 * self.SCALE), badge_y + int(10 * self.SCALE)), clean_badge, fill=self.COLOR_TEXT,
-                  font=f_stat)
+        draw.ellipse(
+            [(int(100 * self.SCALE), badge_y + int(19 * self.SCALE)),
+             (int(100 * self.SCALE) + b_dot_r * 2, badge_y + int(19 * self.SCALE) + b_dot_r * 2)],
+            fill=badge_dot_col
+        )
+        draw.text((int(122 * self.SCALE), badge_y + int(10 * self.SCALE)), clean_badge, fill=self.COLOR_TEXT, font=f_stat)
 
-        # Параметры сети без ломающихся символов
-        net_info = f"Напруга: {voltage_val} V" + (
-            f"   •   Частота: {freq_val} Hz" if freq_val and freq_val != "—" else "")
-        draw.text((int(80 * self.SCALE), card_y + int(360 * self.SCALE)), net_info, fill=self.COLOR_TEXT_MUTED,
-                  font=f_desc)
+        # Power grid metrics
+        net_info = f"Напруга: {voltage_val} V" + (f"   •   Частота: {freq_val} Hz" if freq_val and freq_val != "—" else "")
+        draw.text((int(80 * self.SCALE), card_y + int(360 * self.SCALE)), net_info, fill=self.COLOR_TEXT_MUTED, font=f_desc)
 
         return img.resize((self.BASE_WIDTH, self.BASE_HEIGHT), resample=Image.Resampling.LANCZOS)
 
-    # ==================== СЦЕНА 3: ПЛАН VS ФАКТ ====================
+    # ==================== SCENE 3: PLAN VS FACT ====================
     def _render_plan_vs_fact(
-            self,
-            planned_events: list[CalendarEvent],
-            fact_history: list[dict],
-            is_power_on: bool,
-            now: datetime,
-            group_name: str
+        self,
+        planned_events: list[CalendarEvent],
+        fact_history: list[dict],
+        now: datetime,
+        group_name: str
     ) -> Image.Image:
         img = Image.new("RGB", (self.WIDTH, self.HEIGHT), color=self.COLOR_BG)
         draw = ImageDraw.Draw(img)
 
-        f_hdr = self._get_font(32, bold=True)
-        f_sub = self._get_font(22, bold=False)
         f_lbl = self._get_font(26, bold=True)
         f_time = self._get_font(18, bold=False)
         f_badge = self._get_font(20, bold=True)
 
-        self._draw_header(img, draw, "@Napryazhometr • ПЛАН ПРОТИ ФАКТУ", f"Аналіз доби ({now.strftime('%d.%m')}) | {group_name}")
+        sub_title = messages.CARD_SUBTITLE_PLAN_VS_FACT.format(date=now.strftime("%d.%m"), group_name=group_name)
+        self._draw_header(img, draw, messages.CARD_TITLE_PLAN_VS_FACT, sub_title)
 
-        # Центрируем карточку
+        # Centered container card
         card_y = int(120 * self.SCALE)
         card_h = int(470 * self.SCALE)
         draw.rounded_rectangle(
@@ -392,15 +378,17 @@ class EventCardService:
         now_sec = (now - today_start).total_seconds()
         now_ratio = min(1.0, max(0.0, now_sec / 86400))
 
-        # Выравниваем две полосы по вертикали по центру карточки
+        # Vertical positioning for the two comparison bars
         bar_h = int(54 * self.SCALE)
-        p_y = card_y + int(110 * self.SCALE)  # Шкала плана
-        f_y = card_y + int(240 * self.SCALE)  # Шкала факта
+        p_y = card_y + int(110 * self.SCALE)  # Plan bar
+        f_y = card_y + int(240 * self.SCALE)  # Fact bar
 
-        # --- 1. ШКАЛА ПЛАНА (ДТЕК) ---
-        draw.text((int(70 * self.SCALE), p_y + int(12 * self.SCALE)), "ПЛАН", fill=self.COLOR_TEXT, font=f_lbl)
-        draw.rounded_rectangle([(chart_x, p_y), (chart_x + chart_w, p_y + bar_h)], radius=int(8 * self.SCALE),
-                               fill=self.COLOR_CARD, outline=self.COLOR_CARD_BORDER, width=int(1.5 * self.SCALE))
+        # --- 1. DTEK SCHEDULED PLAN BAR ---
+        draw.text((int(70 * self.SCALE), p_y + int(12 * self.SCALE)), messages.CARD_LABEL_PLAN, fill=self.COLOR_TEXT, font=f_lbl)
+        draw.rounded_rectangle(
+            [(chart_x, p_y), (chart_x + chart_w, p_y + bar_h)],
+            radius=int(8 * self.SCALE), fill=self.COLOR_CARD, outline=self.COLOR_CARD_BORDER, width=int(1.5 * self.SCALE)
+        )
 
         day_events = [e for e in planned_events if e.start.date() == now.date() or e.end.date() == now.date()]
         for e in day_events:
@@ -411,12 +399,14 @@ class EventCardService:
                 x2 = chart_x + int(((f - today_start).total_seconds() / 86400) * chart_w)
                 draw.rectangle([(x1, p_y + 1), (x2, p_y + bar_h - 1)], fill=self.COLOR_OFF)
 
-        # --- 2. ШКАЛА ФАКТА (РЕАЛЬНОСТЬ) ---
-        draw.text((int(70 * self.SCALE), f_y + int(12 * self.SCALE)), "ФАКТ", fill=self.COLOR_TEXT, font=f_lbl)
-        draw.rounded_rectangle([(chart_x, f_y), (chart_x + chart_w, f_y + bar_h)], radius=int(8 * self.SCALE),
-                               fill=self.COLOR_DIMMED)
+        # --- 2. FACTUAL TELEMETRY BAR ---
+        draw.text((int(70 * self.SCALE), f_y + int(12 * self.SCALE)), messages.CARD_LABEL_FACT, fill=self.COLOR_TEXT, font=f_lbl)
+        draw.rounded_rectangle(
+            [(chart_x, f_y), (chart_x + chart_w, f_y + bar_h)],
+            radius=int(8 * self.SCALE), fill=self.COLOR_DIMMED
+        )
 
-        intervals = self._parse_ha_history(fact_history, today_start, now, is_power_on)
+        intervals = self._parse_ha_history(fact_history, today_start, now)
         for s_dt, e_dt, state_on in intervals:
             x1 = chart_x + int(((s_dt - today_start).total_seconds() / 86400) * chart_w)
             x2 = chart_x + int(((e_dt - today_start).total_seconds() / 86400) * chart_w)
@@ -424,29 +414,24 @@ class EventCardService:
                 color = self.COLOR_ON if state_on else self.COLOR_OFF
                 draw.rectangle([(x1, f_y + 1), (x2, f_y + bar_h - 1)], fill=color)
 
-        # Маркер ЗАРАЗ
+        # Current time cursor (NOW)
         now_x = chart_x + int(now_ratio * chart_w)
-        draw.line([(now_x, p_y - int(10 * self.SCALE)), (now_x, f_y + bar_h + int(10 * self.SCALE))],
-                  fill=self.COLOR_YELLOW, width=3 * self.SCALE)
-        draw.text((now_x - int(25 * self.SCALE), f_y + bar_h + int(15 * self.SCALE)), "ЗАРАЗ",
-                  fill=self.COLOR_YELLOW, font=f_badge)
+        draw.line([(now_x, p_y - int(10 * self.SCALE)), (now_x, f_y + bar_h + int(10 * self.SCALE))], fill=self.COLOR_YELLOW, width=3 * self.SCALE)
+        draw.text((now_x - int(25 * self.SCALE), f_y + bar_h + int(15 * self.SCALE)), messages.CARD_BADGE_NOW, fill=self.COLOR_YELLOW, font=f_badge)
 
-        # Часовые засечки снизу
+        # Hour ticks (00:00 - 24:00)
         for h in [0, 6, 12, 18, 24]:
             hx = chart_x + int((h / 24) * chart_w)
-            draw.line([(hx, p_y + bar_h), (hx, p_y + bar_h + int(8 * self.SCALE))], fill=self.COLOR_CARD_BORDER,
-                      width=int(1.5 * self.SCALE))
-            draw.text((hx - int(16 * self.SCALE), p_y + bar_h + int(12 * self.SCALE)), f"{h:02d}:00",
-                      fill=self.COLOR_TEXT_MUTED, font=f_time)
-
-        # Лишний текст снизу полностью удален — остается чистое сравнение
+            draw.line([(hx, p_y + bar_h), (hx, p_y + bar_h + int(8 * self.SCALE))], fill=self.COLOR_CARD_BORDER, width=int(1.5 * self.SCALE))
+            draw.text((hx - int(16 * self.SCALE), p_y + bar_h + int(12 * self.SCALE)), f"{h:02d}:00", fill=self.COLOR_TEXT_MUTED, font=f_time)
 
         return img.resize((self.BASE_WIDTH, self.BASE_HEIGHT), resample=Image.Resampling.LANCZOS)
 
-    def _parse_ha_history(self, history: list[dict], today_start: datetime, now: datetime, current_is_on: bool):
-        """Превращает сырые события HA в непрерывные отрезки (start, end, is_on)."""
+    def _parse_ha_history(self, history: list[dict], today_start: datetime, now: datetime) -> list[tuple[datetime, datetime, bool]]:
+        """Parses raw Home Assistant state history into contiguous segments (start, end, is_on)."""
+        current_state = (history[-1].get("state") == "on") if history else False
         if not history:
-            return [(today_start, now, current_is_on)]
+            return [(today_start, now, current_state)]
 
         intervals = []
         last_dt = today_start
@@ -464,11 +449,12 @@ class EventCardService:
                 last_dt = dt
                 last_state = (item.get("state") == "on")
 
-        intervals.append((last_dt, now, current_is_on))
+        intervals.append((last_dt, now, last_state))
         return intervals
 
-    # ==================== КОДИРОВАНИЕ MP4 ====================
+    # ==================== VIDEO ENCODING ====================
     def _encode_video(self, frames: list[Image.Image], out_path: str, fps: int):
+        """Encodes sequence of PIL images to H.264 MP4 using system ffmpeg or imageio."""
         ffmpeg_bin = shutil.which("ffmpeg")
         if ffmpeg_bin:
             cmd = [
