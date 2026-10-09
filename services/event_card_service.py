@@ -216,57 +216,55 @@ class EventCardService:
         chosen = random.choice(candidates)
         ext = chosen.suffix.lower()
 
-        # 1. Animated GIF
-        if ext == ".gif":
+        # 1. MP4 Video clip (decoded natively via ffmpeg)
+        if ext == ".mp4":
+            try:
+                return self._extract_mp4_frames(chosen, target_count)
+            except Exception as e:
+                import logging
+                logging.getLogger(__name__).warning("Failed to decode MP4 meme %s: %s", chosen, e)
+
+        # 2. Animated GIF
+        elif ext == ".gif":
             try:
                 with Image.open(chosen) as g:
                     raw_frames = [self._fit_to_canvas(f.convert("RGBA")) for f in ImageSequence.Iterator(g)]
                 if raw_frames:
                     return [raw_frames[i % len(raw_frames)] for i in range(target_count)]
-            except Exception:
-                pass
-
-        # 2. MP4 Video clip
-        elif ext == ".mp4":
-            try:
-                import imageio.v3 as iio
-                raw_frames = []
-                for arr in iio.imiter(chosen):
-                    pil_img = Image.fromarray(arr).convert("RGBA")
-                    raw_frames.append(self._fit_to_canvas(pil_img))
-                    if len(raw_frames) >= target_count:
-                        break
-                if raw_frames:
-                    return [raw_frames[i % len(raw_frames)] for i in range(target_count)]
-            except Exception:
-                pass
+            except Exception as e:
+                import logging
+                logging.getLogger(__name__).warning("Failed to decode GIF meme %s: %s", chosen, e)
 
         # 3. Static image (PNG, JPG, WEBP)
-        try:
-            with Image.open(chosen) as img:
-                single_frame = self._fit_to_canvas(img.convert("RGBA"))
-                return [single_frame] * target_count
-        except Exception:
-            pass
+        else:
+            try:
+                with Image.open(chosen) as img:
+                    single_frame = self._fit_to_canvas(img.convert("RGBA"))
+                    return [single_frame] * target_count
+            except Exception as e:
+                import logging
+                logging.getLogger(__name__).warning("Failed to load static meme %s: %s", chosen, e)
 
         default_f = self._render_default_meme(is_power_on)
         return [default_f] * target_count
 
     def _render_default_meme(self, is_power_on: bool) -> Image.Image:
-        """Generates fallback graphic if no user memes are present."""
+        """Fallback graphic drawn with clean vector shapes without broken font emojis."""
         img = Image.new("RGB", (self.WIDTH, self.HEIGHT), color=self.COLOR_BG)
         draw = ImageDraw.Draw(img)
-        f_huge = self._get_font(110, bold=True)
-        f_sub = self._get_font(32, bold=False)
+        f_title = self._get_font(44, bold=True)
 
-        icon = "💡" if is_power_on else "🔌"
-        title = messages.DEFAULT_MEME_TITLE_ON if is_power_on else messages.DEFAULT_MEME_TITLE_OFF
         col = self.COLOR_ON if is_power_on else self.COLOR_OFF
+        title = messages.DEFAULT_MEME_TITLE_ON if is_power_on else messages.DEFAULT_MEME_TITLE_OFF
 
-        b1 = draw.textbbox((0, 0), icon, font=f_huge)
-        draw.text(((self.WIDTH - (b1[2] - b1[0])) // 2, int(180 * self.SCALE)), icon, font=f_huge)
-        b2 = draw.textbbox((0, 0), title, font=f_sub)
-        draw.text(((self.WIDTH - (b2[2] - b2[0])) // 2, int(350 * self.SCALE)), title, fill=col, font=f_sub)
+        # Draw a clean glowing vector circle indicator instead of a font emoji
+        cx, cy = self.WIDTH // 2, int(220 * self.SCALE)
+        r = int(50 * self.SCALE)
+        draw.ellipse([(cx - r, cy - r), (cx + r, cy + r)], fill=col)
+
+        b_title = draw.textbbox((0, 0), title, font=f_title)
+        tw = b_title[2] - b_title[0]
+        draw.text(((self.WIDTH - tw) // 2, int(330 * self.SCALE)), title, fill=col, font=f_title)
         return img.resize((self.BASE_WIDTH, self.BASE_HEIGHT), resample=Image.Resampling.LANCZOS)
 
     # ==================== SCENE 2: STATUS CARD ====================
@@ -473,3 +471,44 @@ class EventCardService:
         import imageio.v3 as iio
         import numpy as np
         iio.imwrite(out_path, [np.asarray(f) for f in frames], fps=fps, codec="libx264")
+
+    def _extract_mp4_frames(self, video_path: Path, target_count: int) -> list[Image.Image]:
+        """Extracts and scales frames from an MP4 video using system ffmpeg directly."""
+        ffmpeg_bin = shutil.which("ffmpeg") or "ffmpeg"
+        bg_hex = "0xF3F4F6"
+
+        # ffmpeg filter scales and pads video to canvas preserving aspect ratio
+        vf = (
+            f"scale={self.BASE_WIDTH}:{self.BASE_HEIGHT}:force_original_aspect_ratio=decrease,"
+            f"pad={self.BASE_WIDTH}:{self.BASE_HEIGHT}:(ow-iw)/2:(oh-ih)/2:color={bg_hex}"
+        )
+        cmd = [
+            ffmpeg_bin,
+            "-y",
+            "-loglevel", "error",
+            "-i", str(video_path),
+            "-vf", vf,
+            "-vframes", str(target_count),
+            "-f", "rawvideo",
+            "-pix_fmt", "rgb24",
+            "-",
+        ]
+
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        raw_bytes, stderr = proc.communicate()
+
+        if proc.returncode != 0 or not raw_bytes:
+            raise RuntimeError(f"ffmpeg frame extraction failed: {stderr.decode(errors='ignore')}")
+
+        frame_size = self.BASE_WIDTH * self.BASE_HEIGHT * 3
+        extracted: list[Image.Image] = []
+        for i in range(0, len(raw_bytes), frame_size):
+            chunk = raw_bytes[i:i + frame_size]
+            if len(chunk) == frame_size:
+                extracted.append(Image.frombytes("RGB", (self.BASE_WIDTH, self.BASE_HEIGHT), chunk))
+
+        if not extracted:
+            raise RuntimeError(f"No frames decoded from {video_path}")
+
+        # Loop frames if the meme clip is shorter than target duration
+        return [extracted[i % len(extracted)] for i in range(target_count)]
