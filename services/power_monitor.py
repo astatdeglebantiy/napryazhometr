@@ -55,6 +55,7 @@ class PowerMonitor:
             self.store.active_frequency_alert = FrequencyAlert.NONE
 
         # Record state timestamps and compute duration of the previous period
+        self.store.last_power_state = "on" if is_on else "off"
         if is_on:
             elapsed = int(now_ts - self.store.last_power_off_ts) if self.store.last_power_off_ts else None
             dur_template = messages.DURATION_OFF_SUMMARY
@@ -63,6 +64,8 @@ class PowerMonitor:
             elapsed = int(now_ts - self.store.last_power_on_ts) if self.store.last_power_on_ts else None
             dur_template = messages.DURATION_ON_SUMMARY
             self.store.last_power_off_ts = now_ts
+
+        self.store.save()
 
         self.store.save()
 
@@ -153,3 +156,20 @@ class PowerMonitor:
             return float(state["state"]) if state else default
         except (ValueError, TypeError, KeyError):
             return default
+
+    async def sync_on_startup(self):
+        """Checks if power state transitioned while offline and dispatches event if missed."""
+        p_state = await self.ha.get_entity_state(self.cfg.power_binary_sensor)
+        if not p_state or p_state.get("state") in ("unknown", "unavailable"):
+            return
+
+        current_state = p_state["state"]
+        last_state = self.store.last_power_state
+
+        if last_state and current_state != last_state:
+            logger.info("Detected missed power state change while offline: %s -> %s", last_state, current_state)
+            await self.handle_power_state_change(new_state=current_state, old_state=last_state)
+        elif not last_state:
+            # First initialization
+            self.store.last_power_state = current_state
+            self.store.save()

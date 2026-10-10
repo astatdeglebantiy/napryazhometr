@@ -18,6 +18,7 @@ class StateStore:
         self.file_path = Path(file_path)
         self.last_power_on_ts: float | None = None
         self.last_power_off_ts: float | None = None
+        self.last_power_state: str | None = None  # Tracks "on" or "off" state across restarts
         self.active_voltage_alert: VoltageAlert = VoltageAlert.NONE
         self.active_frequency_alert: FrequencyAlert = FrequencyAlert.NONE
         self.last_schedule_hash: str = ""
@@ -36,6 +37,7 @@ class StateStore:
             data = json.loads(content)
             self.last_power_on_ts = data.get("last_power_on_ts")
             self.last_power_off_ts = data.get("last_power_off_ts")
+            self.last_power_state = data.get("last_power_state")
             self.active_voltage_alert = self._safe_enum(
                 VoltageAlert, data.get("active_voltage_alert"), VoltageAlert.NONE
             )
@@ -55,6 +57,7 @@ class StateStore:
         data = {
             "last_power_on_ts": self.last_power_on_ts,
             "last_power_off_ts": self.last_power_off_ts,
+            "last_power_state": self.last_power_state,
             "active_voltage_alert": self.active_voltage_alert.value,
             "active_frequency_alert": self.active_frequency_alert.value,
             "last_schedule_hash": self.last_schedule_hash,
@@ -65,14 +68,17 @@ class StateStore:
 
         try:
             temp_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
-            temp_file.replace(self.file_path)  # Atomic rename on POSIX/Linux
-        except Exception as e:
-            logger.error("Failed to write state file %s: %s", self.file_path, e)
-            if temp_file.exists():
+            temp_file.replace(self.file_path)
+        except OSError as e:
+            if e.errno == 16:
                 try:
-                    temp_file.unlink()
-                except OSError:
-                    pass
+                    self.file_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+                except Exception as inner_err:
+                    logger.error("Direct write fallback failed for %s: %s", self.file_path, inner_err)
+            else:
+                logger.error("Failed to write state file %s: %s", self.file_path, e)
+        except Exception as e:
+            logger.error("Unexpected error saving state file %s: %s", self.file_path, e)
 
     @staticmethod
     def _safe_enum(enum_cls: Type[E], value: str | None, default: E) -> E:

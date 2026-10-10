@@ -95,6 +95,9 @@ async def main():
     # 7. Background Event Listener
     ws_task = asyncio.create_task(ha_client.listen_events(dispatcher.dispatch_event))
 
+    # Catch up on any missed events (schedules, power transitions, alerts) while offline
+    asyncio.create_task(dispatcher.sync_on_startup())
+
     logger.info("Bot successfully started. Listening to Home Assistant events...")
     try:
         await dp.start_polling(bot)
