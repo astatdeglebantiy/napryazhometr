@@ -85,10 +85,10 @@ class Config:
         """Prefix prepended to messages in development mode."""
         return "🧪 <b>[DEV]</b> " if self.is_dev else ""
 
-    @property
-    def msg_suffix(self) -> str:
-        """Suffix appended to messages for ."""
-        return "\n\n<tg-emoji emoji-id='5312104457515837830'>🔵</tg-emoji> <a href='https://t.me/NapryazhometrPK41'>Напряжометр</a>"
+    # @property
+    # def msg_suffix(self) -> str:
+    #     """Suffix appended to messages for ."""
+    #     return "\n\n<tg-emoji emoji-id='5312104457515837830'>🔵</tg-emoji> <a href='https://t.me/NapryazhometrPK41'>Напряжометр</a>"
 
     @property
     def state_file_path(self) -> str:

@@ -100,5 +100,5 @@ class FrequencyMonitor:
         """Sends an HTML formatted message with optional environment prefix."""
         await self.bot.send_message(
             self.cfg.target_chat_id,
-            self.cfg.msg_dev_prefix + text + self.cfg.msg_suffix,
+            self.cfg.msg_dev_prefix + text,
         )
