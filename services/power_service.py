@@ -17,18 +17,25 @@ class PowerService:
 
     @staticmethod
     def format_duration(seconds: int) -> str:
-        """Formats duration in seconds into human-readable Ukrainian hours and minutes."""
+        """Formats duration in seconds into human-readable Ukrainian days/hours or hours/minutes without leading zeros."""
         s = max(0, seconds)
-        h = s // 3600
-        m = (s % 3600) // 60
-        return f"{h:02d} год {m:02d} хв"
+        days = s // 86400
+        hours = (s % 86400) // 3600
+        minutes = (s % 3600) // 60
+
+        # If it lasted 24 hours or longer, show days and hours
+        if days > 0:
+            return f"{days} доб {hours} год"
+
+        # Otherwise show hours and minutes without leading zeros
+        return f"{hours} год {minutes} хв"
 
     def build_popup_message(self, snapshot: PowerSnapshot) -> str:
         """Constructs text payload for Telegram callback query alert popup."""
         now_ts = datetime.now().timestamp()
         target_ts = snapshot.last_power_on_ts if snapshot.is_on else snapshot.last_power_off_ts
 
-        dur_str = "00 год 00 хв"
+        dur_str = "0 год 0 хв"
         if target_ts:
             dur_str = self.format_duration(int(now_ts - target_ts))
 
@@ -69,7 +76,7 @@ class PowerService:
 
         return messages.POWER_ON_MESSAGE.format(
             voltage=voltage,
-            time_str=now.strftime("%H год %M хв"),
+            time_str=now.strftime("%H:%M"),
             dur_str=dur_str,
             plan_msg=plan_msg,
             next_str=next_str,
@@ -93,7 +100,7 @@ class PowerService:
         )
 
         return messages.POWER_OFF_MESSAGE.format(
-            time_str=now.strftime("%H год %M хв"),
+            time_str=now.strftime("%H:%M"),
             dur_str=dur_str,
             plan_msg=plan_msg,
             next_str=next_str,

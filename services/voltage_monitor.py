@@ -25,13 +25,13 @@ class VoltageMonitor:
     # Declarative threshold rules ordered by priority
     ALERT_RULES = (
         VoltageRule(
-            condition=lambda v: v < 175,
+            condition=lambda v: v < 180,
             alert=VoltageAlert.CRITICAL_LOW,
             suppressed_by=(VoltageAlert.CRITICAL_LOW,),
             template=messages.VOLTAGE_CRITICAL_LOW,
         ),
         VoltageRule(
-            condition=lambda v: 175 <= v < 195,
+            condition=lambda v: 180 <= v < 195,
             alert=VoltageAlert.LOW,
             suppressed_by=(VoltageAlert.LOW, VoltageAlert.CRITICAL_LOW),
             template=messages.VOLTAGE_LOW,
