@@ -13,7 +13,7 @@ class ScheduleService:
         self.tz = pytz.timezone(tz_name)
 
     def _get_day_start(self, d: date) -> datetime:
-        """Safely localizes midnight in pytz avoiding historical LMT (+02:02) offsets."""
+        """Safely localizes midnight in pytz"""
         return self.tz.localize(datetime.combine(d, datetime.min.time()))
 
     def compute_signature(

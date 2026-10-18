@@ -8,6 +8,7 @@ import pytz
 
 from config import Config
 import messages
+from models.schedule import PowerState
 from services.graph_service import GraphService
 from services.ha_client import HomeAssistantClient
 from services.schedule_service import ScheduleService
@@ -95,6 +96,8 @@ class SchedulePublisher:
                 today_text=today_text,
                 tomorrow_date=(today + timedelta(days=1)).strftime("%d.%m"),
                 tomorrow_text=tomorrow_text,
+                on=PowerState.LIGHT_ON.icon,
+                off=PowerState.LIGHT_OFF.icon,
             )
 
             await self.bot.send_animation(

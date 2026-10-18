@@ -79,7 +79,8 @@ SCHEDULE_UPDATE_CAPTION = (
     "<b>Сьогодні ({today_date}):</b>\n"
     "{today_text}\n\n"
     "<b>Завтра ({tomorrow_date}):</b>\n"
-    "{tomorrow_text}"
+    "{tomorrow_text}\n\n"
+    "<i>{on} — Світло є • {off} — Світла нема</i>"
 )
 
 

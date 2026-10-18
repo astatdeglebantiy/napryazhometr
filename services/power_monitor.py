@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 import logging
 from typing import Callable
 
@@ -67,22 +67,21 @@ class PowerMonitor:
 
         self.store.save()
 
-        self.store.save()
-
         # Define the start of the current day for historical and calendar queries
         today_start = now_dt.replace(hour=0, minute=0, second=0, microsecond=0)
 
         # Fetch telemetry and schedule status from Home Assistant
         v_state = await self.ha.get_entity_state(self.cfg.voltage_sensor)
         f_state = await self.ha.get_entity_state(self.cfg.frequency_sensor)
-        dtek_state = await self.ha.get_entity_state(self.cfg.dtek_electricity_status)
 
         # Fetch planned events starting from midnight (today_start) to populate the "Plan" chart correctly
         planned_events = await self.ha.get_calendar_events(self.cfg.calendar_planned, today_start, 48)
 
         voltage = self._parse_float(v_state) if is_on else 0.0
         freq = self._parse_float(f_state, default=50.0) if is_on else None
-        dtek_status = dtek_state.get("state", "normal") if dtek_state else "normal"
+
+        # Determine real schedule compliance directly from calendar with a 15-minute tolerance
+        dtek_status = self._determine_dtek_status(planned_events, now_dt, is_on)
 
         plan_badge = self._get_plan_badge(dtek_status, is_on)
         dur_str = dur_template.format(duration=self.power_srv.format_duration(elapsed)) if elapsed else ""
@@ -173,3 +172,39 @@ class PowerMonitor:
             # First initialization
             self.store.last_power_state = current_state
             self.store.save()
+
+    @staticmethod
+    def _determine_dtek_status(
+            planned_events: list[CalendarEvent],
+            now_dt: datetime,
+            is_on: bool,
+            tolerance_minutes: int = 15,
+    ) -> str:
+        """Determines real schedule compliance using calendar events and operational tolerance."""
+        tolerance = timedelta(minutes=tolerance_minutes)
+
+        if is_on:
+            # Power came back ON
+            for e in planned_events:
+                # Power restored during scheduled outage
+                if e.start <= now_dt < e.end:
+                    # If restored within tolerance of the scheduled end (e.g. 22:20 for a 22:30 plan)
+                    if (e.end - now_dt) <= tolerance:
+                        return "normal"
+                    # Restored significantly earlier -> Lucky!
+                    return "planned_outage"
+
+                # Power restored right after scheduled outage ended (e.g. 22:31 for a 22:30 plan)
+                if timedelta(0) <= (now_dt - e.end) <= timedelta(minutes=30):
+                    return "normal"
+
+            return "normal"
+        else:
+            # Power went OFF
+            for e in planned_events:
+                # Power cut during or within tolerance of scheduled outage start
+                if e.start <= now_dt < e.end or abs(now_dt - e.start) <= tolerance:
+                    return "planned_outage"
+
+            # Power cut outside scheduled outages -> Unexpected
+            return "normal"

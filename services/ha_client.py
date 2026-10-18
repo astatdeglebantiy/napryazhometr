@@ -92,7 +92,10 @@ class HomeAssistantClient:
         return events
 
     async def listen_events(self, on_state_changed: Callable[[dict], Awaitable[None]]):
-        """Subscribes to Home Assistant WebSocket state_changed event stream with auto-reconnect."""
+        """Subscribes to Home Assistant WebSocket state_changed event stream with exponential backoff."""
+        retry_delay = 5
+        max_retry_delay = 60
+
         while True:
             try:
                 session = await self.get_session()
@@ -105,10 +108,13 @@ class HomeAssistantClient:
                     auth_ok = await ws.receive_json()
                     if auth_ok.get("type") != "auth_ok":
                         logger.error("Home Assistant WebSocket auth failed: %s", auth_ok)
-                        await asyncio.sleep(5)
+                        await asyncio.sleep(retry_delay)
                         continue
 
                     logger.info("Successfully connected to Home Assistant WebSocket.")
+                    # Reset backoff interval on successful connection
+                    retry_delay = 5
+
                     await ws.send_json(
                         {"id": 1, "type": "subscribe_events", "event_type": "state_changed"}
                     )
@@ -122,8 +128,14 @@ class HomeAssistantClient:
                             break
 
             except Exception as e:
-                logger.warning("Home Assistant WebSocket connection error: %s. Reconnecting in 5s...", e)
-                await asyncio.sleep(5)
+                logger.warning(
+                    "Home Assistant WebSocket connection error: %s. Reconnecting in %ds...",
+                    e,
+                    retry_delay,
+                )
+                await asyncio.sleep(retry_delay)
+                # Exponential backoff up to 60 seconds to avoid flooding logs
+                retry_delay = min(int(retry_delay * 1.5), max_retry_delay)
 
     async def close(self):
         """Gracefully closes underlying aiohttp client session."""

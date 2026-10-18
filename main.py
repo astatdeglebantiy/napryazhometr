@@ -3,6 +3,7 @@ import logging
 import sys
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
+from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.enums import ParseMode
 
 from bot.handlers import router
@@ -28,13 +29,38 @@ logging.basicConfig(
 logger = logging.getLogger("napryazhometr")
 
 
+async def wait_for_telegram_connection(bot: Bot, max_attempts: int = 120, delay: int = 5):
+    """Waits for network and DNS connectivity to Telegram before starting polling."""
+    for attempt in range(1, max_attempts + 1):
+        try:
+            me = await bot.get_me()
+            logger.info("Connected to Telegram successfully as @%s (id=%d)", me.username, me.id)
+            return
+        except Exception as e:
+            logger.warning(
+                "Waiting for network/DNS to reach Telegram (attempt %d/%d): %s. Retrying in %ds...",
+                attempt,
+                max_attempts,
+                e,
+                delay,
+            )
+            await asyncio.sleep(delay)
+    logger.error("Could not reach Telegram after %d attempts. Terminating.", max_attempts)
+    sys.exit(1)
+
+
 async def main():
     if not config.bot_token or not config.target_chat_id:
         logger.error("Missing bot token or target chat id (is_dev=%s)", config.is_dev)
         sys.exit(1)
 
-    # 1. Telegram Bot Core
-    bot = Bot(token=config.bot_token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+    # 1. Telegram Bot Core with numeric timeout (float in seconds, compatible with aiogram polling)
+    bot_session = AiohttpSession(timeout=60.0)
+    bot = Bot(
+        token=config.bot_token,
+        session=bot_session,
+        default=DefaultBotProperties(parse_mode=ParseMode.HTML),
+    )
     dp = Dispatcher()
 
     # 2. State & External Clients
@@ -92,10 +118,13 @@ async def main():
         dp.include_router(dev_router)
         logger.info("Development router successfully attached (/dev command available).")
 
-    # 7. Background Event Listener
+    # 7. Safe startup: ensure Telegram API is reachable before starting event loops
+    await wait_for_telegram_connection(bot)
+
+    # Background WebSocket listener
     ws_task = asyncio.create_task(ha_client.listen_events(dispatcher.dispatch_event))
 
-    # Catch up on any missed events (schedules, power transitions, alerts) while offline
+    # Catch up on any missed events while the bot was offline
     asyncio.create_task(dispatcher.sync_on_startup())
 
     logger.info("Bot successfully started. Listening to Home Assistant events...")

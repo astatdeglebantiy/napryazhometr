@@ -31,7 +31,7 @@ class FrequencyMonitor:
             template=messages.FREQUENCY_CRITICAL_LOW,
         ),
         FrequencyRule(
-            condition=lambda hz: 49.20 <= hz < 49.80,
+            condition=lambda hz: 49.20 <= hz < 49.70,
             alert=FrequencyAlert.LOW,
             suppressed_by=(FrequencyAlert.LOW, FrequencyAlert.CRITICAL_LOW),
             template=messages.FREQUENCY_LOW,
